@@ -1,0 +1,9 @@
+version: '3'
+
+services:
+  python314:
+    image: cool-tianqin:latest
+    container_name: cool-tianqin
+    volumes:
+      - .:/app
+    restart: always
