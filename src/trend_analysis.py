@@ -5,10 +5,12 @@
 import os
 import re
 import pandas as pd
+import unicodedata
 from datetime import datetime
 from dotenv import load_dotenv
 from tqsdk import TqApi, TqAuth
 from tqsdk.ta import MACD
+import pymysql
 
 # ── 参数配置 ──────────────────────────────────────────────
 # 从 .env 文件加载环境变量（或注册免费账户: https://account.shinnytech.com/）
@@ -16,89 +18,40 @@ load_dotenv()
 TQ_ACCOUNT = os.getenv("TQ_ACCOUNT", "")
 TQ_PASSWORD = os.getenv("TQ_PASSWORD", "")
 
-# 合约名称映射字典
-CONTRACT_NAMES = {
-    # 上期所
-    "SHFE.au": "黄金",
-    "SHFE.ag": "白银",
-    "SHFE.cu": "铜",
-    "SHFE.al": "铝",
-    "SHFE.sn": "锡",
-    "SHFE.zn": "锌",
-    "SHFE.pb": "铅",
-    "SHFE.ni": "镍",
-    "SHFE.ao": "氧化铝",
-    "SHFE.fu": "燃料油",
-    "SHFE.sp": "纸浆",
-    "SHFE.bu": "沥青",
-    "SHFE.br": "丁二烯胶",
-    "SHFE.ru": "橡胶",
-    "SHFE.rb": "螺纹钢",
-    "SHFE.hc": "热卷",
-    "SHFE.ss": "不锈钢",
-    # 大商所
-    "DCE.a": "豆一",
-    "DCE.b": "豆二",
-    "DCE.y": "豆油",
-    "DCE.m": "豆粕",
-    "DCE.p": "棕榈油",
-    "DCE.c": "玉米",
-    "DCE.cs": "淀粉",
-    "DCE.jd": "鸡蛋",
-    "DCE.jm": "焦煤",
-    "DCE.i": "铁矿石",
-    "DCE.pg": "液化石油气",
-    "DCE.l": "塑料",
-    "DCE.v": "PVC",
-    "DCE.eg": "乙二醇",
-    "DCE.pp": "聚丙烯",
-    "DCE.eb": "苯乙烯",
-    "DCE.bz": "纯苯",
-    "DCE.lh": "生猪",
-    "DCE.lg": "原木",
-    # 郑商所
-    "CZCE.FG": "玻璃",
-    "CZCE.TA": "PTA",
-    "CZCE.PX": "对二甲苯",
-    "CZCE.MA": "甲醇",
-    "CZCE.UR": "尿素",
-    "CZCE.SA": "纯碱",
-    "CZCE.SH": "烧碱",
-    "CZCE.SF": "硅铁",
-    "CZCE.SM": "锰硅",
-    "CZCE.SR": "白糖",
-    "CZCE.CF": "棉花",
-    "CZCE.AP": "苹果",
-    "CZCE.CJ": "红枣",
-    "CZCE.PK": "花生",
-    "CZCE.PF": "短纤",
-    # 广期所
-    "GFEX.si": "工业硅",
-    "GFEX.ps": "多晶硅",
-    "GFEX.lc": "碳酸锂",
-    "GFEX.pt": "铂金",
-    "GFEX.pd": "钯金",
-    # 上期能源
-    "INE.sc": "原油",
-    "INE.nr": "20号胶",
-    "INE.lu": "低硫燃料油",
+# MySQL配置
+MYSQL_CONFIG = {
+    "host": os.getenv("MYSQL_HOST", "localhost"),
+    "port": int(os.getenv("MYSQL_PORT", 3306)),
+    "user": os.getenv("MYSQL_USERNAME", "root"),
+    "password": os.getenv("MYSQL_PASSWORD", ""),
+    "database": os.getenv("MYSQL_DATABASE", "cool"),
+    "charset": "utf8mb4",
 }
 
 
-def get_contract_name(symbol):
-    """
-    根据合约代码获取合约名称
-    
-    Args:
-        symbol: 合约代码，如 "SHFE.cu2602" 或 "DCE.i2605"
-    
-    Returns:
-        str: 合约名称，如果找不到则返回合约代码
-    """
-    # 去掉合约代码中的数字，获取前缀
-    prefix = remove_numbers_from_contract(symbol)
-    # 从映射字典中查找名称
-    return CONTRACT_NAMES.get(prefix, symbol)
+def get_mysql_connection():
+    """获取 MySQL 数据库连接"""
+    return pymysql.connect(**MYSQL_CONFIG)
+
+
+def fetch_contract_list():
+    """从数据库 tianqin_trend 表查询品种列表（status=1 的正常数据）"""
+    conn = get_mysql_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT id, code, name, remark FROM tianqin_trend WHERE status IN (0, 1)"
+            )
+            rows = cursor.fetchall()
+            return [
+                {"id": row[0], "code": row[1], "name": row[2], "remark": row[3]}
+                for row in rows
+            ]
+    except Exception as e:
+        print(f"从数据库查询品种列表失败: {e}")
+        return []
+    finally:
+        conn.close()
 
 
 def calculate_ma(klines, periods=[5, 10, 20, 60]):
@@ -736,13 +689,13 @@ def generate_trading_suggestion(trend_direction, trend_state, trend_strength, cu
     return suggestion
 
 
-def analyze_trend(api, symbol, duration=86400):
+def analyze_trend(api, main_symbol, duration=86400):
     """
     分析单个合约的趋势行情和当前状态
     
     Args:
         api: TqApi实例
-        symbol: 合约代码，如 "GFEX.ps2605"
+        main_symbol: 主力合约代码，如 "GFEX.ps2605"
         duration: K线周期，86400表示日线
     
     Returns:
@@ -751,11 +704,11 @@ def analyze_trend(api, symbol, duration=86400):
 
     try:
         # 获取K线数据
-        klines = api.get_kline_serial(symbol, duration)
+        klines = api.get_kline_serial(main_symbol, duration)
         
         if len(klines) < 100:  # 需要足够的数据计算指标
             return {
-                'symbol': symbol,
+                'main_symbol': main_symbol,
                 'status': '数据不足',
                 'reason': f'K线数据不足，当前只有{len(klines)}根，需要至少100根'
             }
@@ -791,13 +744,9 @@ def analyze_trend(api, symbol, duration=86400):
             current_price, current_ma20, current_ma5, current_atr
         )
         
-        # 获取合约名称
-        contract_name = get_contract_name(symbol)
-        
         # 构建结果
         result = {
-            'symbol': symbol,
-            'contract_name': contract_name,
+            'main_symbol': main_symbol,
             'price': float(current_price),
             'trend_direction': trend_direction,
             'trend_state': trend_state,
@@ -821,7 +770,7 @@ def analyze_trend(api, symbol, duration=86400):
         
     except Exception as e:
         return {
-            'symbol': symbol,
+            'main_symbol': main_symbol,
             'status': '错误',
             'reason': str(e)
         }
@@ -855,279 +804,290 @@ def extract_contract_number(contract):
     return int(nums[-1]) if nums else 0
 
 
-def find_contracts_by_prefix(all_cont_quotes, prefixes):
-    """
-    根据合约前缀从all_cont_quotes中查找匹配的完整合约代码
-    
+def find_main_symbols(all_cont_quotes, contract_list):
+    """根据品种 code 前缀从 all_cont_quotes 中查找主力合约代码 mainSymbol
+
     Args:
-        all_cont_quotes: query_cont_quotes()返回的所有主连合约对应的标的合约
-                        可能是字典、列表或其他可迭代对象
-        prefixes: 合约前缀列表，如 ["SHFE.ni", "DCE.i"]
-    
+        all_cont_quotes: api.query_cont_quotes() 返回的全部主力合约列表
+        contract_list: 从数据库加载的品种列表，每项含 code/name
+
     Returns:
-        list: 匹配的完整合约代码列表
+        dict: {code: mainSymbol} 映射
     """
-    matched_contracts = []
-    
-    # 处理不同的数据结构
+    matched = {}
+
+    # 将 all_cont_quotes 统一为合约代码列表
     if isinstance(all_cont_quotes, dict):
-        # 如果是字典，可能是 {主连合约: 标的合约} 或 {标的合约: 其他信息}
-        # 先尝试使用值，如果值不是合约代码，则使用键
-        contract_list = []
+        contract_list_all = []
         for key, value in all_cont_quotes.items():
-            # 如果值是字符串且看起来像合约代码，使用值
-            if isinstance(value, str) and '.' in value:
-                contract_list.append(value)
-            # 否则使用键
-            elif isinstance(key, str) and '.' in key:
-                contract_list.append(key)
+            if isinstance(value, str) and "." in value:
+                contract_list_all.append(value)
+            elif isinstance(key, str) and "." in key:
+                contract_list_all.append(key)
     elif isinstance(all_cont_quotes, list):
-        contract_list = all_cont_quotes
+        contract_list_all = all_cont_quotes
     else:
-        # 尝试转换为列表
         try:
-            contract_list = list(all_cont_quotes) if hasattr(all_cont_quotes, '__iter__') else []
-        except:
-            contract_list = []
-    
-    for prefix in prefixes:
-        # 去掉前缀中的数字（如果有的话），用于匹配
-        prefix_clean = remove_numbers_from_contract(prefix)
-        
-        # 查找匹配的合约：去掉合约代码中的数字后，完全匹配前缀
+            contract_list_all = list(all_cont_quotes) if hasattr(all_cont_quotes, "__iter__") else []
+        except Exception:
+            contract_list_all = []
+
+    for item in contract_list:
+        code = item["code"]
+        name = item["name"]
+        prefix_clean = remove_numbers_from_contract(code)
         matches = []
-        for contract in contract_list:
+        for contract in contract_list_all:
             if not isinstance(contract, str):
                 continue
-            # 去掉合约代码中的数字
             contract_clean = remove_numbers_from_contract(contract)
-            # 完全匹配
             if contract_clean == prefix_clean:
                 matches.append(contract)
-        
+
         if matches:
             # 找到多个匹配时，按合约代码中的数字部分排序，取最大的（最新到期月份）
-            matched_contract = sorted(matches, key=extract_contract_number, reverse=True)[0]
-            matched_contracts.append(matched_contract)
-            contract_name = get_contract_name(matched_contract)
-            if len(matches) > 1:
-                print(f"  ✅ {prefix} ({CONTRACT_NAMES.get(prefix, '')}) -> {matched_contract} ({contract_name}) (找到{len(matches)}个匹配，使用最新月份)")
-            else:
-                print(f"  ✅ {prefix} ({CONTRACT_NAMES.get(prefix, '')}) -> {matched_contract} ({contract_name})")
+            main_symbol = sorted(matches, key=extract_contract_number, reverse=True)[0]
+            matched[code] = main_symbol
+            print(f"  ✅ {code} ({name}) -> {main_symbol}")
         else:
-            print(f"  ⚠ 警告: 未找到匹配 {prefix} ({CONTRACT_NAMES.get(prefix, '')}) 的合约")
-    
-    return matched_contracts
+            print(f"  ⚠ 警告: 未找到匹配 {code} ({name}) 的合约")
+
+    return matched
 
 
-def scan_contracts(api, symbols, duration=86400):
-    """
-    扫描多个合约，分析趋势行情
-    
+def save_to_mysql(results):
+    """将分析结果更新到 MySQL tianqin_trend 表（按 code 更新）"""
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:00")
+    conn = get_mysql_connection()
+    try:
+        with conn.cursor() as cursor:
+            sql = """
+                UPDATE tianqin_trend SET
+                    updateTime = %s,
+                    mainSymbol = %s,
+                    price = %s,
+                    trendDirection = %s,
+                    trendState = %s,
+                    trendStrength = %s,
+                    action = %s,
+                    actionDetail = %s
+                WHERE code = %s
+            """
+            values = []
+            for r in results:
+                values.append((
+                    now,
+                    r.get("main_symbol", ""),
+                    round(float(r.get("price", 0)), 2),
+                    r.get("trend_direction", ""),
+                    r.get("trend_state", ""),
+                    round(float(r.get("trend_strength", 0)), 1),
+                    r.get("action", ""),
+                    r.get("action_detail", ""),
+                    r.get("code", ""),
+                ))
+            cursor.executemany(sql, values)
+        conn.commit()
+        print(f"  MySQL 更新成功: {len(results)} 条记录 -> tianqin_trend")
+    except Exception as e:
+        conn.rollback()
+        print(f"  MySQL 更新失败: {e}")
+    finally:
+        conn.close()
+
+
+def scan_contracts(api, contract_list, main_symbol_map, duration=86400):
+    """扫描多个合约，分析趋势行情
+
     Args:
         api: TqApi实例
-        symbols: 合约代码列表
+        contract_list: 从数据库加载的品种列表
+        main_symbol_map: {code: mainSymbol} 映射
         duration: K线周期，86400表示日线
-    
+
     Returns:
         list: 分析结果列表
     """
     results = []
-    
-    for symbol in symbols:
-        contract_name = get_contract_name(symbol)
-        print(f"正在分析: {symbol} ({contract_name})")
-        result = analyze_trend(api, symbol, duration)
+
+    for item in contract_list:
+        code = item["code"]
+        name = item["name"]
+        main_symbol = main_symbol_map.get(code)
+        if not main_symbol:
+            continue
+
+        print(f"正在分析: {main_symbol} ({name})")
+        result = analyze_trend(api, main_symbol, duration)
+        result["code"] = code
+        result["name"] = name
         results.append(result)
-        
+
         # 打印结果
-        if 'trend_direction' in result:
+        if "trend_direction" in result:
             print(f"  ✅ {result['trend_direction']} | {result['trend_state']} | 强度: {result['trend_strength']:.1f}%")
-            if 'action' in result:
+            if "action" in result:
                 print(f"    💡 操作建议: {result['action']} | {result['action_detail']}")
-        elif result.get('status') == '错误':
+        elif result.get("status") == "错误":
             print(f"  ✗ 错误: {result.get('reason', '未知错误')}")
         else:
             print(f"  - {result.get('status', '未知状态')}")
-    
+
     return results
+
+
+def _display_width(text):
+    """字符串在等宽终端中的显示宽度（全角/宽字符计为2）"""
+    return sum(
+        2 if unicodedata.east_asian_width(ch) in ("F", "W") else 1
+        for ch in str(text)
+    )
+
+
+def _pad_text(text, width, align="left"):
+    text = str(text)
+    padding = width - _display_width(text)
+    if padding <= 0:
+        return text
+    if align == "right":
+        return " " * padding + text
+    return text + " " * padding
+
+
+def print_aligned_table(df, col_align=None, sep="  "):
+    """打印列对齐的表格（兼容中文等宽字符）"""
+    if col_align is None:
+        col_align = {}
+    columns = list(df.columns)
+    data = [list(row) for row in df.itertuples(index=False, name=None)]
+
+    widths = []
+    for i, col in enumerate(columns):
+        default_align = "right" if df[col].dtype.kind in "iufc" else "left"
+        align = col_align.get(col, default_align)
+        max_w = _display_width(col)
+        for row in data:
+            max_w = max(max_w, _display_width(row[i]))
+        widths.append((max_w, align))
+
+    print(sep.join(_pad_text(col, widths[i][0]) for i, col in enumerate(columns)))
+    for row in data:
+        print(sep.join(
+            _pad_text(row[i], widths[i][0], widths[i][1])
+            for i in range(len(columns))
+        ))
 
 
 def main():
     """主函数"""
+    # 从数据库加载品种列表
+    contract_list = fetch_contract_list()
+    if not contract_list:
+        print("未从数据库加载到品种列表，请检查 tianqin_trend 表")
+        return
+    print(f"已从数据库加载 {len(contract_list)} 个品种\n")
+
     # 初始化API
     api = TqApi(auth=TqAuth(TQ_ACCOUNT, TQ_PASSWORD))
-    
+
     try:
         print("等待API连接建立...")
-        # api.wait_update()
         print("API连接已建立\n")
-        
-        # 获取全部主连合约对应的标的合约
+
+        # 1. 获取全部主力合约列表
         all_cont_quotes = api.query_cont_quotes()
-        
-        # 定义要分析的合约前缀（只需要指定前缀，系统会自动查找匹配的完整合约代码）
-        test_prefixes = [
-            # 上期所
-            "SHFE.au",    # 黄金
-            "SHFE.ag",    # 白银
-            "SHFE.cu",    # 铜
-            "SHFE.al",    # 铝
-            "SHFE.ao",    # 氧化铝
-            "SHFE.zn",    # 锌
-            "SHFE.pb",    # 铅
-            "SHFE.ni",    # 镍
-            "SHFE.sn",    # 锡
-            "SHFE.rb",    # 螺纹钢
-            "SHFE.hc",    # 热卷
-            "SHFE.ss",    # 不锈钢
-            "SHFE.fu",    # 燃料油
-            "SHFE.bu",    # 沥青
-            "SHFE.ru",    # 橡胶
-            "SHFE.br",    # 丁二烯胶
-            "SHFE.sp",    # 纸浆
-            # 大商所
-            "DCE.a",      # 豆一
-            "DCE.b",      # 豆二
-            "DCE.y",      # 豆油
-            "DCE.m",      # 豆粕
-            "DCE.p",      # 棕榈油
-            "DCE.c",      # 玉米
-            "DCE.cs",     # 淀粉
-            "DCE.jd",     # 鸡蛋
-            "DCE.jm",     # 焦煤
-            "DCE.i",      # 铁矿石
-            "DCE.pg",     # 液化石油气
-            "DCE.l",      # 塑料
-            "DCE.v",      # PVC
-            "DCE.eg",     # 乙二醇
-            "DCE.pp",     # 聚丙烯
-            "DCE.eb",     # 苯乙烯
-            "DCE.bz",     # 纯苯
-            "DCE.lh",     # 生猪
-            "DCE.lg",     # 原木
-            # 郑商所
-            "CZCE.FG",    # 玻璃
-            "CZCE.TA",    # PTA
-            "CZCE.PX",    # 对二甲苯
-            "CZCE.MA",    # 甲醇
-            "CZCE.UR",    # 尿素
-            "CZCE.SA",    # 纯碱
-            "CZCE.SH",    # 烧碱
-            "CZCE.SF",    # 硅铁
-            "CZCE.SM",    # 锰硅
-            "CZCE.SR",    # 白糖
-            "CZCE.CF",    # 棉花
-            "CZCE.AP",    # 苹果
-            "CZCE.CJ",    # 红枣
-            "CZCE.PK",    # 花生
-            "CZCE.PF",    # 短纤
-            # 广期所
-            "GFEX.si",    # 工业硅
-            "GFEX.ps",    # 多晶硅
-            "GFEX.lc",    # 碳酸锂
-            "GFEX.pt",    # 铂金
-            "GFEX.pd",    # 钯金
-            # 上期能源
-            "INE.sc",    # 原油
-            "INE.nr",    # 20号胶
-            "INE.lu",    # 低硫燃料油
-        ]
-        
-        
+
+        # 2. 根据品种 code 前缀查找主力合约代码 mainSymbol
         print("=" * 80)
-        print("根据前缀查找匹配的合约")
+        print("根据品种代码查找匹配的主力合约")
         print("=" * 80)
-        
-        # 根据前缀查找匹配的完整合约代码
-        test_symbols = find_contracts_by_prefix(all_cont_quotes, test_prefixes)
-        
-        if not test_symbols:
-            print("\n未找到任何匹配的合约，请检查前缀是否正确")
+
+        main_symbol_map = find_main_symbols(all_cont_quotes, contract_list)
+
+        if not main_symbol_map:
+            print("\n未找到任何匹配的合约，请检查品种代码是否正确")
             return
-        
-        print(f"\n共找到 {len(test_symbols)} 个匹配的合约")
+
+        print(f"\n共找到 {len(main_symbol_map)} 个匹配的合约")
         print("\n" + "=" * 80)
         print("趋势行情分析")
         print("=" * 80)
-        
-        # 扫描合约
-        results = scan_contracts(api, test_symbols, duration=86400)  # 86400=日线
-        
+
+        # 3. 遍历品种列表，通过 mainSymbol 分析数据
+        results = scan_contracts(api, contract_list, main_symbol_map, duration=86400)
+
         # 筛选有效结果
-        valid_results = [r for r in results if 'trend_direction' in r]
-        
+        valid_results = [r for r in results if "trend_direction" in r]
+
         print("\n" + "=" * 80)
         print("分析结果汇总")
         print("=" * 80)
-        
+
         if valid_results:
             print(f"\n共分析 {len(valid_results)} 个合约:\n")
-            
-            # 创建DataFrame便于查看
+
             df_data = []
             for r in valid_results:
                 df_data.append({
-                    '合约代码': r['symbol'],
-                    '合约名称': r.get('contract_name', ''),
-                    '当前价格': r.get('price', 0),
-                    '趋势方向': r.get('trend_direction', ''),
-                    '当前状态': r.get('trend_state', ''),
-                    '趋势强度': f"{r.get('trend_strength', 0):.1f}%",
-                    '操作建议': r.get('action', ''),
-                    '操作详情': r.get('action_detail', ''),
+                    "品种代码": r["code"],
+                    "品种名称": r.get("name", ""),
+                    "主力合约": r.get("main_symbol", ""),
+                    "当前价格": r.get("price", 0),
+                    "趋势方向": r.get("trend_direction", ""),
+                    "当前状态": r.get("trend_state", ""),
+                    "趋势强度": r.get("trend_strength", 0),
+                    "操作建议": r.get("action", ""),
+                    "操作详情": r.get("action_detail", ""),
                 })
-            
-            df = pd.DataFrame(df_data)
-            print(df.to_string(index=False))
-            
-            # 保存到CSV
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            csv_dir = "data/trend_analysis2"
-            os.makedirs(csv_dir, exist_ok=True)
-            csv_file = f"{csv_dir}/trend_analysis_{timestamp}.csv"
-            df.to_csv(csv_file, index=False, encoding='utf-8-sig')
-            print(f"\n结果已保存到: {csv_file}")
-            
+
+            df_all = pd.DataFrame(df_data)
+
+            print_aligned_table(
+                df_all,
+                col_align={"当前价格": "right", "趋势强度": "right"},
+            )
+
+            # 4. 保存到 MySQL（UPDATE 更新）
+            save_to_mysql(valid_results)
+
             # 按趋势方向分类统计
             print("\n" + "=" * 80)
             print("趋势方向统计")
             print("=" * 80)
             trend_stats = {}
             for r in valid_results:
-                direction = r.get('trend_direction', '未知')
-                state = r.get('trend_state', '未知')
+                direction = r.get("trend_direction", "未知")
+                state = r.get("trend_state", "未知")
                 key = f"{direction}-{state}"
                 trend_stats[key] = trend_stats.get(key, 0) + 1
-            
+
             for key, count in sorted(trend_stats.items()):
                 print(f"  {key}: {count} 个")
         else:
             print("\n未找到有效分析结果")
-        
+
         # 显示详细结果
         print("\n" + "=" * 80)
         print("详细分析结果")
         print("=" * 80)
         for r in results:
-            if 'trend_direction' in r:
-                contract_name = r.get('contract_name', r['symbol'])
-                print(f"\n{r['symbol']} ({contract_name}):")
+            if "trend_direction" in r:
+                name = r.get("name", r["main_symbol"])
+                print(f"\n{r['main_symbol']} ({name}):")
                 print(f"  当前价格: {r['price']:.2f}")
                 print(f"  趋势方向: {r['trend_direction']}")
                 print(f"  当前状态: {r['trend_state']}")
                 print(f"  趋势强度: {r['trend_strength']:.1f}%")
                 print(f"  ATR: {r['atr']:.2f}")
-                # 显示操作建议
-                if 'action' in r:
+                if "action" in r:
                     print(f"\n  💡 波段操作建议:")
                     print(f"    操作类型: {r['action']}")
                     print(f"    操作详情: {r['action_detail']}")
-                    if r.get('suggestion_reason'):
+                    if r.get("suggestion_reason"):
                         print(f"    建议理由: {r['suggestion_reason']}")
-            elif r.get('status'):
-                print(f"\n{r['symbol']}: {r.get('status')} - {r.get('reason', '')}")
-        
+            elif r.get("status"):
+                print(f"\n{r['main_symbol']}: {r.get('status')} - {r.get('reason', '')}")
+
     except Exception as e:
         print(f"发生错误: {e}")
         import traceback
