@@ -14,4 +14,4 @@ RUN pip install --no-cache-dir -r requirements.txt
 # 挂载项目目录
 VOLUME [ "/app" ]
 
-CMD ["python", "runserver.py"]
+CMD ["python", "src/run.py"]
