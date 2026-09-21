@@ -1,4 +1,5 @@
 APScheduler
+flask
 python-dotenv
 redis
 tqsdk
