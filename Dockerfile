@@ -14,4 +14,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 # 挂载项目目录
 VOLUME [ "/app" ]
 
-CMD ["python", "src/run.py"]
+# 如果端口更换，这边可以更新一下
+EXPOSE 8002
+
+CMD ["python", "src/app.py"]
