@@ -63,20 +63,20 @@ scheduler.add_job(my_job, 'cron', hour=22, minute=0)
 scheduler.add_job(my_job, 'cron', hour=23, minute=0)
 
 # 接口
-@app.route("/tianqinapi/macd_kdj", methods=["GET"])
+@app.route("/api/macd_kdj", methods=["POST"])
 def api_macd_kdj():
     started = _run_in_background("macd_kdj", macd_kdj.main)
     if started:
-        return jsonify({"msg": "任务已在后台启动", "code": 200})
-    return jsonify({"msg": "任务正在执行中，请勿重复请求", "code": 409})
+        return jsonify({"message": "任务已在后台启动", "code": 1000})
+    return jsonify({"message": "任务正在执行中，请勿重复请求", "code": 1001})
 
 # 接口
-@app.route("/tianqinapi/trend_analysis", methods=["GET"])
+@app.route("/api/trend_analysis", methods=["POST"])
 def api_trend_analysis():
     started = _run_in_background("trend_analysis", trend_analysis.main)
     if started:
-        return jsonify({"msg": "任务已在后台启动", "code": 200})
-    return jsonify({"msg": "任务正在执行中，请勿重复请求", "code": 409})
+        return jsonify({"message": "任务已在后台启动", "code": 1000})
+    return jsonify({"message": "任务正在执行中，请勿重复请求", "code": 1001})
 
 if __name__ == '__main__':
     scheduler.start()
