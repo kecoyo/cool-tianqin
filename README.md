@@ -18,3 +18,7 @@ pip freeze > requirements.txt
 pip install -r requirements.txt
 ```
 
+## 导出镜像
+```
+docker save -o cool-tianqin.tar cool-tianqin:latest
+```
