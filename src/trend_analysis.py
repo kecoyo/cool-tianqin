@@ -706,9 +706,17 @@ def analyze_trend(api, main_symbol, duration=86400):
         # 获取K线数据
         klines = api.get_kline_serial(main_symbol, duration)
         
+        # 获取合约实际名称（如"黄金2512"）
+        quote = api.get_quote(main_symbol)
+        contract_name = quote.instrument_name if hasattr(quote, 'instrument_name') and quote.instrument_name else ""
+        # 主力合约代码（不含交易所代码），如 main_symbol="DCE.p2701" -> "p2701"
+        contract_code = main_symbol.split(".", 1)[-1] if "." in main_symbol else main_symbol
+
         if len(klines) < 100:  # 需要足够的数据计算指标
             return {
                 'main_symbol': main_symbol,
+                'contract_code': contract_code,
+                'contract_name': contract_name,
                 'status': '数据不足',
                 'reason': f'K线数据不足，当前只有{len(klines)}根，需要至少100根'
             }
@@ -743,10 +751,12 @@ def analyze_trend(api, main_symbol, duration=86400):
             trend_direction, trend_state, trend_strength,
             current_price, current_ma20, current_ma5, current_atr
         )
-        
+
         # 构建结果
         result = {
             'main_symbol': main_symbol,
+            'contract_code': contract_code,
+            'contract_name': contract_name,
             'price': float(current_price),
             'trend_direction': trend_direction,
             'trend_state': trend_state,
@@ -771,6 +781,8 @@ def analyze_trend(api, main_symbol, duration=86400):
     except Exception as e:
         return {
             'main_symbol': main_symbol,
+            'contract_code': main_symbol.split(".", 1)[-1] if "." in main_symbol else main_symbol,
+            'contract_name': '',
             'status': '错误',
             'reason': str(e)
         }
@@ -865,6 +877,8 @@ def save_to_mysql(results):
                 UPDATE tianqin_trend SET
                     updateTime = %s,
                     mainSymbol = %s,
+                    contractCode = %s,
+                    contractName = %s,
                     price = %s,
                     trendDirection = %s,
                     trendState = %s,
@@ -878,6 +892,8 @@ def save_to_mysql(results):
                 values.append((
                     now,
                     r.get("main_symbol", ""),
+                    r.get("contract_code", ""),
+                    r.get("contract_name", ""),
                     round(float(r.get("price", 0)), 2),
                     r.get("trend_direction", ""),
                     r.get("trend_state", ""),
@@ -1032,6 +1048,8 @@ def main():
                     "品种代码": r["code"],
                     "品种名称": r.get("name", ""),
                     "主力合约": r.get("main_symbol", ""),
+                    "合约代码": r.get("contract_code", ""),
+                    "合约名称": r.get("contract_name", ""),
                     "当前价格": r.get("price", 0),
                     "趋势方向": r.get("trend_direction", ""),
                     "当前状态": r.get("trend_state", ""),
