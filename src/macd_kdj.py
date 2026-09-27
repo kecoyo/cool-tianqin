@@ -94,6 +94,13 @@ def analyze_trend(api, main_symbol):
     try:
         # 日线K线数据
         klines = api.get_kline_serial(main_symbol, 60 * 60 * 24, 200)
+
+        # 获取合约实际名称（如"黄金2512"）
+        quote = api.get_quote(main_symbol)
+        contract_name = quote.instrument_name if hasattr(quote, "instrument_name") and quote.instrument_name else ""
+        # 主力合约代码（不含交易所代码），如 main_symbol="DCE.p2701" -> "p2701"
+        contract_code = main_symbol.split(".", 1)[-1] if "." in main_symbol else main_symbol
+
         macd = MACD(klines, 12, 26, 9)
         kdj = KDJ(klines, 9, 3, 3)
         cci = CCI(klines, 14)
@@ -115,6 +122,8 @@ def analyze_trend(api, main_symbol):
 
         return {
             "main_symbol": main_symbol,
+            "contract_code": contract_code,
+            "contract_name": contract_name,
             "price": current_price,
             "trend": trend,
             "band": band,
@@ -129,6 +138,8 @@ def analyze_trend(api, main_symbol):
     except Exception as e:
         return {
             "main_symbol": main_symbol,
+            "contract_code": main_symbol.split(".", 1)[-1] if "." in main_symbol else main_symbol,
+            "contract_name": "",
             "status": "错误",
             "error": str(e),
         }
@@ -149,6 +160,8 @@ def save_to_mysql(results):
                 UPDATE tianqin_data SET
                     updateTime = %s,
                     mainSymbol = %s,
+                    contractCode = %s,
+                    contractName = %s,
                     price = %s,
                     trend = %s,
                     band = %s,
@@ -164,6 +177,8 @@ def save_to_mysql(results):
                 values.append((
                     now,
                     r.get("main_symbol", ""),
+                    r.get("contract_code", ""),
+                    r.get("contract_name", ""),
                     round(float(r.get("price", 0)), 2),
                     r.get("trend", ""),
                     r.get("band", ""),
@@ -363,6 +378,8 @@ def main():
                     "品种代码": r["code"],
                     "品种名称": r.get("name", ""),
                     "主力合约": r.get("main_symbol", ""),
+                    "合约代码": r.get("contract_code", ""),
+                    "合约名称": r.get("contract_name", ""),
                     "当前价格": r.get("price", 0),
                     "趋势方向": r.get("trend", ""),
                     "当前运行": r.get("band", ""),
