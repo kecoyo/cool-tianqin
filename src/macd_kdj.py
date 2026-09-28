@@ -53,6 +53,7 @@ def fetch_contract_list():
 
 
 def get_trend_direction(fast, slow, idx=-1):
+    """快线在慢线上方为多头，慢线下方为空头"""
 
     curr_fast = float(fast.iloc[idx])
     curr_slow = float(slow.iloc[idx])
@@ -68,30 +69,22 @@ def get_macd_trend_direction(dea, idx=-1):
     return "多头" if curr_dea >= 0 else "空头"
 
 
-def get_macd_trend_state(diff, dea, idx=-1):
-    if len(diff) < 2:
-        return ""
-
-    prev_diff = float(diff.iloc[idx - 1])
-    prev_dea = float(dea.iloc[idx - 1])
-    curr_diff = float(diff.iloc[idx])
-    curr_dea = float(dea.iloc[idx])
-
-    if curr_dea >= 0:
-        return "主趋势" if curr_diff >= curr_dea else "次级折返"
-    else:
-        return "主趋势" if curr_diff <= curr_dea else "次级折返"
-
-
-def get_cross_signal(fast, slow, idx=-1):
-    """判断快慢线金叉或死叉（优先识别最新 K 线上的交叉事件）"""
-    if len(fast) < 2:
-        return "金叉" if float(fast.iloc[idx]) > float(slow.iloc[idx]) else "死叉"
+def get_cross_state(fast, slow, idx=-1):
+    """ 金叉或死叉时，fast 大于等于 slow 为多头，否则为空头"""
 
     curr_fast = float(fast.iloc[idx])
     curr_slow = float(slow.iloc[idx])
 
-    return "金叉" if curr_fast > curr_slow else "死叉"
+    return "多头" if curr_fast >= curr_slow else "空头"
+
+
+def get_cross_signal(fast, slow, idx=-1):
+    """判断快慢线金叉或死叉（优先识别最新 K 线上的交叉事件）"""
+
+    curr_fast = float(fast.iloc[idx])
+    curr_slow = float(slow.iloc[idx])
+
+    return "金叉" if curr_fast >= curr_slow else "死叉"
 
 
 def DKQS(df, p1, p2):
@@ -129,6 +122,16 @@ def analyze_trend(api, main_symbol):
         # 主力合约代码（不含交易所代码），如 main_symbol="DCE.p2701" -> "p2701"
         contract_code = main_symbol.split(".", 1)[-1] if "." in main_symbol else main_symbol
 
+        # 周线
+        week_klines = api.get_kline_serial(main_symbol, 60 * 60 * 24 * 7, 200)
+        week_macd = MACD(week_klines, 12, 26, 9)
+        week_kdj = KDJ(week_klines, 9, 3, 3)
+        week_dkqs = DKQS(week_klines, 60, 10)
+        week_trend_direction = get_long_short_trend(week_klines["close"], week_dkqs["ma1"])
+        week_trend_state = get_long_short_state(week_dkqs["ma2"])
+        week_kdj_signal = get_cross_signal(week_kdj["k"], week_kdj["d"])
+        week_kdj_value = float(week_kdj["d"].iloc[-1])
+
         # 日线
         day_klines = api.get_kline_serial(main_symbol, 60 * 60 * 24, 200)
         current_price = float(day_klines["close"].iloc[-1])
@@ -136,7 +139,7 @@ def analyze_trend(api, main_symbol):
         day_kdj = KDJ(day_klines, 9, 3, 3)
         day_cci = CCI(day_klines, 14)
         day_trend_direction = get_macd_trend_direction(day_macd["dea"])
-        day_trend_state = get_macd_trend_state(day_macd["diff"], day_macd["dea"])
+        day_trend_state = get_cross_state(day_macd["diff"], day_macd["dea"])
         day_kdj_signal = get_cross_signal(day_kdj["k"], day_kdj["d"])
         day_kdj_value = float(day_kdj["d"].iloc[-1])
         day_cci_value = float(day_cci["cci"].iloc[-1])
@@ -149,36 +152,22 @@ def analyze_trend(api, main_symbol):
         hour_trend_direction = get_trend_direction(hour_ema60, hour_ema334)
         hour_cci_value = float(hour_cci["cci"].iloc[-1])
 
-        # 周线
-        week_klines = api.get_kline_serial(main_symbol, 60 * 60 * 24 * 7, 200)
-        week_macd = MACD(week_klines, 12, 26, 9)
-        week_kdj = KDJ(week_klines, 9, 3, 3)
-        week_dkqs = DKQS(week_klines, 60, 10)
-        week_trend_direction = get_macd_trend_direction(week_macd["dea"])
-        week_trend_state = get_macd_trend_state(week_macd["diff"], week_macd["dea"])
-        week_kdj_signal = get_cross_signal(week_kdj["k"], week_kdj["d"])
-        week_kdj_value = float(week_kdj["d"].iloc[-1])
-        week_long_short_trend = get_long_short_trend(week_klines["close"], week_dkqs["ma1"])
-        week_long_short_state = get_long_short_state(week_dkqs["ma2"])
-
         return {
             "main_symbol": main_symbol,
             "contract_code": contract_code,
             "contract_name": contract_name,
             "price": current_price,
+            "week_trend_direction": week_trend_direction,
+            "week_trend_state": week_trend_state,
             "day_trend_direction": day_trend_direction,
             "day_trend_state": day_trend_state,
+            "hour_trend_direction": hour_trend_direction,
+            "hour_cci_value": round(hour_cci_value, 2),
+            "week_kdj_signal": week_kdj_signal,
+            "week_kdj_value": round(week_kdj_value, 2),
             "day_kdj_signal": day_kdj_signal,
             "day_kdj_value": round(day_kdj_value, 2),
             "day_cci_value": round(day_cci_value, 2),
-            "hour_trend_direction": hour_trend_direction,
-            "hour_cci_value": round(hour_cci_value, 2),
-            "week_trend_direction": week_trend_direction,
-            "week_trend_state": week_trend_state,
-            "week_kdj_signal": week_kdj_signal,
-            "week_kdj_value": round(week_kdj_value, 2),
-            "week_long_short_trend": week_long_short_trend,
-            "week_long_short_state": week_long_short_state,
             "status": "完成",
         }
 
@@ -210,13 +199,17 @@ def save_to_mysql(results):
                     contractCode = %s,
                     contractName = %s,
                     price = %s,
-                    trend = %s,
-                    band = %s,
-                    kdjSignal = %s,
-                    kdjValue = %s,
-                    cciValue = %s,
-                    hourTrend = %s,
-                    hourCciValue = %s
+                    weekTrendDirection = %s,
+                    weekTrendState = %s,
+                    dayTrendDirection = %s,
+                    dayTrendState = %s,
+                    hourTrendDirection = %s,
+                    hourCciValue = %s,
+                    weekKdjSignal = %s,
+                    weekKdjValue = %s,
+                    dayKdjSignal = %s,
+                    dayKdjValue = %s,
+                    dayCciValue = %s 
                 WHERE code = %s
             """
             values = []
@@ -227,13 +220,17 @@ def save_to_mysql(results):
                     r.get("contract_code", ""),
                     r.get("contract_name", ""),
                     round(float(r.get("price", 0)), 2),
+                    r.get("week_trend_direction", ""),
+                    r.get("week_trend_state", ""),
                     r.get("day_trend_direction", ""),
                     r.get("day_trend_state", ""),
+                    r.get("hour_trend_direction", ""),
+                    round(float(r.get("hour_cci_value", 0)), 2),
+                    r.get("week_kdj_signal", ""),
+                    round(float(r.get("week_kdj_value", 0)), 2),
                     r.get("day_kdj_signal", ""),
                     round(float(r.get("day_kdj_value", 0)), 2),
                     round(float(r.get("day_cci_value", 0)), 2),
-                    r.get("hour_trend_direction", ""),
-                    round(float(r.get("hour_cci_value", 0)), 2),
                     r.get("code", ""),
                 ))
             cursor.executemany(sql, values)
@@ -367,9 +364,12 @@ def scan_contracts(api, contract_list, main_symbol_map):
 
         if result.get("status") == "完成":
             print(
-                f"  ✅ 趋势方向: {result['day_trend_direction']} | 当前状态: {result['day_trend_state']} | "
-                f"KDJ信号: {result['day_kdj_signal']} | KDJ值: {result['day_kdj_value']:.2f} | "
-                f"CCI值: {result['day_cci_value']:.2f}"
+                f"  ✅ 周趋势: {result['week_trend_direction']} | 周状态: {result['week_trend_state']} | "
+                f"日趋势: {result['day_trend_direction']} | 日状态: {result['day_trend_state']} | "
+                f"小时趋势: {result['hour_trend_direction']} | 小时CCI: {result['hour_cci_value']:.2f} | "
+                f"周KDJ: {result['week_kdj_signal']}({result['week_kdj_value']:.2f}) | "
+                f"日KDJ: {result['day_kdj_signal']}({result['day_kdj_value']:.2f}) | "
+                f"日CCI: {result['day_cci_value']:.2f}"
             )
         elif result.get("status") == "错误":
             print(f"  ❌ 错误: {result.get('error', '未知错误')}")
@@ -428,13 +428,17 @@ def main():
                     "合约代码": r.get("contract_code", ""),
                     "合约名称": r.get("contract_name", ""),
                     "当前价格": r.get("price", 0),
-                    "趋势方向": r.get("day_trend_direction", ""),
-                    "当前状态": r.get("day_trend_state", ""),
-                    "KDJ信号": r.get("day_kdj_signal", ""),
-                    "KDJ值": r.get("day_kdj_value", 0),
-                    "CCI值": r.get("day_cci_value", 0),
+                    "周趋势方向": r.get("week_trend_direction", ""),
+                    "周当前状态": r.get("week_trend_state", ""),
+                    "日趋势方向": r.get("day_trend_direction", ""),
+                    "日当前状态": r.get("day_trend_state", ""),
                     "小时趋势方向": r.get("hour_trend_direction", ""),
                     "小时CCI值": r.get("hour_cci_value", 0),
+                    "周线KDJ信号": r.get("week_kdj_signal", ""),
+                    "周线KDJ值": r.get("week_kdj_value", 0),
+                    "日KDJ信号": r.get("day_kdj_signal", ""),
+                    "日KDJ值": r.get("day_kdj_value", 0),
+                    "日CCI值": r.get("day_cci_value", 0),
                 })
 
             df_all = pd.DataFrame(df_data)
