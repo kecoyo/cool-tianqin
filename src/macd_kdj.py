@@ -61,21 +61,29 @@ def get_ma_trend_direction(fast, slow, idx=-1):
     return "多头" if curr_fast >= curr_slow else "空头"
 
 
-def get_macd_trend_direction(dea, idx=-1):
-    """MACD 在 0 轴上方为多头，0 轴下方为空头"""
+def get_trend_direction(dea, idx=-1):
+    """dea 在 0 轴上方为多头，0 轴下方为空头"""
 
     curr_dea = float(dea.iloc[idx])
 
     return "多头" if curr_dea >= 0 else "空头"
 
 
-def get_macd_trend_state(fast, slow, idx=-1):
-    """ 金叉或死叉时，fast 大于等于 slow 为多头，否则为空头"""
+def get_trend_state(diff, dea, idx=-1):
+    """根据 MACD 趋势方向和金叉/死叉状态判断当前运行状态
 
-    curr_fast = float(fast.iloc[idx])
-    curr_slow = float(slow.iloc[idx])
+    多头趋势: 金叉返回"主要趋势"，死叉返回"次级折返"
+    空头趋势: 死叉返回"主要趋势"，金叉返回"次级折返"
+    """
 
-    return "多头" if curr_fast >= curr_slow else "空头"
+    curr_diff = float(diff.iloc[idx])
+    curr_dea = float(dea.iloc[idx])
+    is_golden_cross = curr_diff >= curr_dea
+
+    if curr_dea >= 0:
+        return "主要趋势" if curr_diff >= curr_dea else "次级折返"
+    else:
+        return "主要趋势" if curr_diff <= curr_dea else "次级折返"
 
 
 def get_cross_signal(fast, slow, idx=-1):
@@ -85,32 +93,6 @@ def get_cross_signal(fast, slow, idx=-1):
     curr_slow = float(slow.iloc[idx])
 
     return "金叉" if curr_fast >= curr_slow else "死叉"
-
-
-def DKQS(df, p1, p2):
-    """多空趋势指标"""
-    new_df = pd.DataFrame()
-    new_df["ma1"] = tafunc.ema(df["close"], p1)
-    new_df["ma2"] = tafunc.ema((df["close"] + df["high"] + df["low"]) / 3, p2)
-    return new_df
-
-
-def get_dkqs_trend_direction(close, ma1, idx=-1):
-    """close 在 ma 上方为多头，ma 下方为空头"""
-
-    curr_close = float(close.iloc[idx])
-    curr_ma1 = float(ma1.iloc[idx])
-
-    return "多头" if curr_close >= curr_ma1 else "空头"
-
-
-def get_dkqs_trend_state(ma2, idx=-1):
-    """ma2 上行为多头，ma2 下行为空头"""
-
-    curr_ma2 = float(ma2.iloc[idx])
-    prev_ma2 = float(ma2.iloc[idx - 1])
-
-    return "多头" if curr_ma2 >= prev_ma2 else "空头"
 
 
 def analyze_trend(api, main_symbol):
@@ -126,11 +108,8 @@ def analyze_trend(api, main_symbol):
         week_klines = api.get_kline_serial(main_symbol, 60 * 60 * 24 * 7, 200)
         week_macd = MACD(week_klines, 12, 26, 9)
         week_kdj = KDJ(week_klines, 9, 3, 3)
-        week_dkqs = DKQS(week_klines, 60, 10)
-        week_trend_direction = get_dkqs_trend_direction(week_klines["close"], week_dkqs["ma1"])
-        week_trend_state = get_dkqs_trend_state(week_dkqs["ma2"])
-        week_macd_trend_direction = get_macd_trend_direction(week_macd["dea"])
-        week_macd_trend_state = get_macd_trend_state(week_macd["diff"], week_macd["dea"])
+        week_trend_direction = get_trend_direction(week_macd["dea"])
+        week_trend_state = get_trend_state(week_macd["diff"], week_macd["dea"])
         week_kdj_signal = get_cross_signal(week_kdj["k"], week_kdj["d"])
         week_kdj_value = float(week_kdj["d"].iloc[-1])
 
@@ -139,11 +118,8 @@ def analyze_trend(api, main_symbol):
         current_price = float(day_klines["close"].iloc[-1])
         day_macd = MACD(day_klines, 12, 26, 9)
         day_kdj = KDJ(day_klines, 9, 3, 3)
-        day_dkqs = DKQS(day_klines, 60, 10)
-        day_trend_direction = get_dkqs_trend_direction(day_klines["close"], day_dkqs["ma1"])
-        day_trend_state = get_dkqs_trend_state(day_dkqs["ma2"])
-        day_macd_trend_direction = get_macd_trend_direction(day_macd["dea"])
-        day_macd_trend_state = get_macd_trend_state(day_macd["diff"], day_macd["dea"])
+        day_trend_direction = get_trend_direction(day_macd["dea"])
+        day_trend_state = get_trend_state(day_macd["diff"], day_macd["dea"])
         day_kdj_signal = get_cross_signal(day_kdj["k"], day_kdj["d"])
         day_kdj_value = float(day_kdj["d"].iloc[-1])
 
@@ -162,14 +138,10 @@ def analyze_trend(api, main_symbol):
             "price": current_price,
             "week_trend_direction": week_trend_direction,
             "week_trend_state": week_trend_state,
-            "week_macd_trend_direction": week_macd_trend_direction,
-            "week_macd_trend_state": week_macd_trend_state,
             "week_kdj_signal": week_kdj_signal,
             "week_kdj_value": round(week_kdj_value, 2),
             "day_trend_direction": day_trend_direction,
             "day_trend_state": day_trend_state,
-            "day_macd_trend_direction": day_macd_trend_direction,
-            "day_macd_trend_state": day_macd_trend_state,
             "day_kdj_signal": day_kdj_signal,
             "day_kdj_value": round(day_kdj_value, 2),
             "hour_trend_direction": hour_trend_direction,
@@ -207,14 +179,10 @@ def save_to_mysql(results):
                     price = %s,
                     weekTrendDirection = %s,
                     weekTrendState = %s,
-                    weekMacdTrendDirection = %s,
-                    weekMacdTrendState = %s,
                     weekKdjSignal = %s,
                     weekKdjValue = %s,
                     dayTrendDirection = %s,
                     dayTrendState = %s,
-                    dayMacdTrendDirection = %s,
-                    dayMacdTrendState = %s,
                     dayKdjSignal = %s,
                     dayKdjValue = %s,
                     hourTrendDirection = %s,
@@ -231,14 +199,10 @@ def save_to_mysql(results):
                     round(float(r.get("price", 0)), 2),
                     r.get("week_trend_direction", ""),
                     r.get("week_trend_state", ""),
-                    r.get("week_macd_trend_direction", ""),
-                    r.get("week_macd_trend_state", ""),
                     r.get("week_kdj_signal", ""),
                     round(float(r.get("week_kdj_value", 0)), 2),
                     r.get("day_trend_direction", ""),
                     r.get("day_trend_state", ""),
-                    r.get("day_macd_trend_direction", ""),
-                    r.get("day_macd_trend_state", ""),
                     r.get("day_kdj_signal", ""),
                     round(float(r.get("day_kdj_value", 0)), 2),
                     r.get("hour_trend_direction", ""),
